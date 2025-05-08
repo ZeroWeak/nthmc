@@ -87,8 +87,17 @@ if [[ "${JOBS_ID}" == "1" ]]; then
   else
 
     if [[ ! -f $RUNNER_TEMP/_config.yml ]]; then set_config $1; fi
-    cd $1 && javac -d user_data/ft_client/test_client javaCode/Main.java
+    if [[ "$(yq '.repository' $RUNNER_TEMP/_config.yml)" != "$TARGET_REPOSITORY" ]]; then
+      #curl -s -X POST \
+        #-H "Authorization: token $GH_TOKEN" \
+        #-H "Accept: application/vnd.github.v3+json" \
+        #"https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
+        #-d '{"event_type": "retry_workflow", "client_payload": {"original_run_id": "${GITHUB_RUN_ID}"}}'
+      echo "$(yq '.repository' $RUNNER_TEMP/_config.yml) != $TARGET_REPOSITORY"
+      exit 1
+    fi
 
+    cd $1 && javac -d user_data/ft_client/test_client javaCode/Main.java
     cd $GITHUB_WORKSPACE && rm -rf user_data && mv -f $1/user_data .
     echo -e "\n$hr\nWORKSPACE\n$hr" && ls -al .
 
