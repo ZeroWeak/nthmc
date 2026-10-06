@@ -7,6 +7,10 @@ inputs:
   id:
     description: The deploy id
     required: false
+  run_id:
+    description: 'The run_id'
+    default: ${{ github.run_id }}
+    required: false
   hub_username:
     description: Username for Docker Hub
     default: ${{ github.actor }}
@@ -57,15 +61,6 @@ inputs:
   token:
     description: 'The deploy token'
     required: false
-  chat_id:
-    description: 'The telegram chat id'
-    required: false
-  bot_token:
-    description: 'The monitor token'
-    required: false
-  logs_token:
-    description: 'The warning token'
-    required: false
   action_path:
     description: 'The action path'
     required: false
@@ -73,11 +68,50 @@ inputs:
     description: 'The deploy repository'
     default: ${{ github.repository }}
     required: false
+  api_key:
+    description: The key of api application
+    required: true
+  api_secret:
+    description: The secret of api application
+    required: true
+  pypi_token:
+    description: The pypi token
+    required: true
+  bot_token:
+    description: The monitor token
+    required: true
+  live_token:
+    description: The trading token
+    required: true
+  logs_token:
+    description: The warning token
+    required: true
+  chat_id:
+    description: The telegram chat id
+    required: true
   initiate_pauli_sum:
     description: Build args
     required: false
     default: ""
-
+  gcp_account:
+    description: The GCP account
+    required: false
+  gcp_id_rsa:
+    description: The GCP ID RSA key
+    required: false
+  gcp_sa_key:
+    description: The GCP service account key
+    required: false
+  jekyll_github_owner:
+    description: The Jekyll GitHub owner
+    required: false
+  jekyll_github_token:
+    description: The Jekyll GitHub token
+    required: false
+  repo_source:
+    description: The repository source
+    required: false
+    
 branding:
   icon: 'command'
   color: 'yellow'
@@ -90,6 +124,86 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Detect if jobs_id=1 was cancelled
+      shell: bash
+      run: |
+        echo "Checking if job 1 was cancelled…"
+        run_id=${{ inputs.run_id }}
+
+        for i in {1..12}; do
+          echo "Polling attempt $i…"
+
+          curl -s -H "Authorization: Bearer ${{ inputs.token }}" \
+            "https://api.github.com/repos/${{ inputs.repository }}/actions/runs/$run_id/jobs" \
+            > jobs.json
+
+          job1_status=$(jq -r '.jobs[] | select(.labels[]?=="ubuntu-latest") | .conclusion' jobs.json)
+          echo "Job 1 conclusion = $job1_status"
+          if [ "$job1_status" != "null" ]; then
+            break
+          fi
+          sleep 10
+        done
+
+        if [ "$job1_status" = "cancelled" ]; then
+          echo "Job 1 was cancelled (timeout confirmed)."
+
+          if [ "$REDUCE_EPOCH" = "false" ]; then
+            REDUCE_EPOCH="2"
+          else
+          # Multiply by 2 (assuming it's a number)
+            REDUCE_EPOCH=$((REDUCE_EPOCH * 2))
+          fi
+          
+          gh workflow run "main.yml" --repo $REPO_NAME --raw-field "RUN_MODE=$RUN_MODE" --raw-field "REDUCE_EPOCH=$REDUCE_EPOCH"
+        else
+          echo "Job 1 was NOT cancelled."
+        fi
+
+    - name: Set secrets on target
+      shell: bash
+      env:
+        ACCESS_API: ${{ inputs.api_key }}
+        ACCESS_KEY: ${{ inputs.api_secret }}
+        ACCESS_TOKEN: ${{ inputs.token }}
+        MESSAGE_API: ${{ inputs.chat_id }}
+        LIVE_TOKEN: ${{ inputs.live_token }}
+        MONITOR_TOKEN: ${{ inputs.bot_token }}
+        WARNING_TOKEN: ${{ inputs.logs_token }}
+        PYPI_TOKEN: ${{ inputs.pypi_token }}        
+        DOCKER_HUB_TOKEN: ${{ inputs.hub_token }}
+        DOCKER_HUB_PASSWORD: ${{ inputs.hub_password }}
+        GCP_CREDENTIALS: ${{ inputs.credentials }}
+        GCP_ACCOUNT: ${{ inputs.gcp_account }}
+        GCP_ID_RSA: ${{ inputs.gcp_id_rsa }}
+        GCP_SA_KEY: ${{ inputs.gcp_sa_key }}
+        JEKYLL_GITHUB_OWNER: ${{ inputs.jekyll_github_owner }}
+        JEKYLL_GITHUB_TOKEN: ${{ inputs.jekyll_github_token }}
+        REPO_SOURCE: ${{ inputs.repo_source }}
+
+      run: |
+        secrets=$(curl -s -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/${{ github.repository }}/actions/secrets" | jq -r '.secrets[].name')
+          errors=0
+  
+          for secret in $secrets; do
+            echo "${!secret}" | sed -n '/./p' > .validated_secret_temp
+    
+            if [ ! -s .validated_secret_temp ]; then
+              echo "❌ Error: Secret '$secret' is empty or contains only whitespace" >&2
+              ((errors++))
+            else
+              gh secret set "$secret" --repo ${{ env.TARGET_REPOSITORY }} --body "${!secret}"
+              echo "✅ Secret '$secret' successfully set"
+            fi
+          done
+  
+          rm -f .validated_secret_temp
+  
+          if [ $errors -gt 0 ]; then
+            echo "❌ $errors secrets failed validation"
+            gh run cancel $GITHUB_RUN_ID --repo "$REPO_NAME"
+          fi
+
     - name: Login to DockerHub
       uses: docker/login-action@v3
       if: runner.os == '-Windows'
@@ -98,12 +212,12 @@ runs:
         password: ${{ inputs.hub_token }}
 
     - name: 💎 Set ID Token
-      uses: 'google-github-actions/auth@v2'
+      uses: 'google-github-actions/auth@v3'
       with:
         credentials_json: ${{ inputs.credentials }}
 
     - name: 💎 Setup Gcloud
-      uses: 'google-github-actions/setup-gcloud@v2'
+      uses: 'google-github-actions/setup-gcloud@v3'
       #with:
         #install_components: 'alpha,cloud-datastore-emulator'
 
@@ -114,20 +228,10 @@ runs:
         bash /Users/runner/work/_actions/eq19/eq19/v2/.github/entrypoint/init.sh
 
     - name: View context attributes
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       with:
         script: console.log(context)
         
-    - name: Set Docker Hub description
-      uses: peter-evans/dockerhub-description@v4
-      with:
-        enable-url-completion: true
-        password: ${{ inputs.hub_token }}
-        username: ${{ inputs.hub_username }}
-        repository: ${{ inputs.image_name }}
-        readme-filepath: ${{ inputs.action_path }}/README.md
-        short-description: ${{ github.event.repository.description }}
-
     - name: Build and Push my_awesome_microservice
       uses: mr-smithers-excellent/docker-build-push@v5
       if: runner.os == '-Windows'
@@ -141,7 +245,7 @@ runs:
 
     # Ref: https://cloud.google.com/compute/docs/instances/create-start-instance
     - name: 💎 Remove Existing Self-Hosted Runner
-      if: env.RERUN_RUNNER == 'true'
+      if: env.REMOVE_RUNNER == 'true'
       shell: bash
       run: |
         for instance_uri in $(gcloud compute instances list --uri 2> /dev/null); do
@@ -158,5 +262,6 @@ runs:
       if: ${{ failure() }}
       shell: bash
       run: |
-        [[ "$GITHUB_JOB" == "lexering" ]] && gh workflow run "main.yml"
-        exit 1
+        [[ "$GITHUB_JOB" == "lexering" ]] && gh workflow run "main.yml" --repo "$REPO_NAME" \
+          --raw-field "RUN_MODE=$RUN_MODE" --raw-field "REMOVE_RUNNER=$REMOVE_RUNNER" \
+          --raw-field "REDUCE_EPOCH=$REDUCE_EPOCH" --raw-field "BYPASS_LEXERING=$BYPASS_LEXERING"

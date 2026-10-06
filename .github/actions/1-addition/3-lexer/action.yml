@@ -66,6 +66,27 @@ inputs:
     description: 'The deploy repository'
     default: ${{ github.repository }}
     required: false
+  api_key:
+    description: The key of api application
+    required: true
+  api_secret:
+    description: The secret of api application
+    required: true
+  pypi_token:
+    description: The pypi token
+    required: true
+  bot_token:
+    description: The monitor token
+    required: true
+  live_token:
+    description: The trading token
+    required: true
+  logs_token:
+    description: The warning token
+    required: true
+  chat_id:
+    description: The telegram chat id
+    required: true
 
 outputs:
   artifact:
@@ -103,6 +124,7 @@ runs:
 
     - name: 🚀 Initiate Lexer
       uses: devcontainers/ci@v0.3
+      if: runner.os == 'Redis'
       id: artifact
       with:
         imageTag: id-${{ env.ID }}
@@ -110,7 +132,7 @@ runs:
         imageName: ${{ inputs.image_name }}
         runCmd: bash user_data/ft_client/test_client/lexer.sh
         configFile: ${{ inputs.action_path }}/.devcontainer.json
-        push: ${{ env.RERUN_RUNNER == 'true' && 'always' || 'never' }}
+        push: ${{ env.REMOVE_RUNNER == 'true' && 'always' || 'never' }}
         env: |
           ID=${{ env.ID }}
           GH_TOKEN=${{ env.GH_TOKEN }}
@@ -140,5 +162,6 @@ runs:
       if: ${{ failure() }}
       shell: bash
       run: |
-        [[ "$GITHUB_JOB" == "lexering" ]] && gh workflow run "main.yml"
-        exit 1
+        [[ "$GITHUB_JOB" == "lexering" ]] && gh workflow run "main.yml" --repo "$REPO_NAME" \
+          --raw-field "RUN_MODE=$RUN_MODE" --raw-field "REMOVE_RUNNER=$REMOVE_RUNNER" \
+          --raw-field "REDUCE_EPOCH=$REDUCE_EPOCH" --raw-field "BYPASS_LEXERING=$BYPASS_LEXERING"
